@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { getDanceMap, getTrackerInfo, getLeaderboard, submitScore, type TrackerInfo, type LeaderboardEntry } from "@/lib/api";
+import { getDanceMap, getTrackerInfo, getLeaderboard, submitScore, getPersonThumbnailURL, type TrackerInfo, type LeaderboardEntry } from "@/lib/api";
 import { API_BASE, BODY_PART_CONNECTIONS, BODY_PART_COLORS, VISIBLE_JOINTS, SCORING_INTERVAL_MS, TIER_COLORS, STAR_THRESHOLDS, STAR_LABELS, MAX_SCORE, CAMERA_STORAGE_KEY, BEATS_PER_BAR, type Difficulty } from "@/lib/constants";
 import { useWebSocket, WSResult } from "@/hooks/useWebSocket";
 import { createScoreState, processScoringFrame, getNextBeatTime, resetMovementTracking, aggregateBarTier } from "@/lib/scoring";
@@ -208,6 +208,11 @@ export default function PlayPage() {
   const [debugLogging, setDebugLogging] = useState(false);
   const debugLoggingRef = useRef(false);
   const debugLogRef = useRef<DebugLogEntry[]>([]);
+
+  // Character selection — for multi-dancer dance maps, lets the player pick
+  // which extracted skeleton drives scoring. Default to person 0 (first).
+  const [selectedPersonId, setSelectedPersonId] = useState<number>(0);
+  const selectedPersonIdRef = useRef<number>(0);
 
   // Leaderboard submission (done screen)
   const [playerName, setPlayerName] = useState("");
@@ -639,15 +644,20 @@ export default function PlayPage() {
 
   const getCoachFrame = useCallback((timeMs: number) => {
     const dm = danceMapRef.current;
-    if (!dm || dm.frames.length === 0) return null;
+    if (!dm) return null;
+    // Prefer the selected person's frame track when persons[] is populated;
+    // fall back to top-level dm.frames for legacy single-person maps.
+    const person = dm.persons?.find((p) => p.id === selectedPersonIdRef.current);
+    const frames = person?.frames?.length ? person.frames : dm.frames;
+    if (!frames || frames.length === 0) return null;
     let lo = 0;
-    let hi = dm.frames.length - 1;
+    let hi = frames.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (dm.frames[mid].t < timeMs) lo = mid + 1;
+      if (frames[mid].t < timeMs) lo = mid + 1;
       else hi = mid;
     }
-    return dm.frames[lo];
+    return frames[lo];
   }, []);
 
   // All persons' nearest frames at this timestamp (multi-dancer dance maps).
@@ -656,9 +666,14 @@ export default function PlayPage() {
   const getAllCoachFrames = useCallback((timeMs: number) => {
     const dm = danceMapRef.current;
     if (!dm) return [];
-    const persons = dm.persons && dm.persons.length > 0
+    // When persons[] is populated, render only the selected dancer's skeleton
+    // so the visual matches what scoring is comparing against.
+    const allPersons = dm.persons && dm.persons.length > 0
       ? dm.persons
       : [{ id: 0, label: "", avg_position: { x: 0.5, y: 0.5 }, frames: dm.frames }];
+    const persons = dm.persons && dm.persons.length > 0
+      ? allPersons.filter((p) => p.id === selectedPersonIdRef.current)
+      : allPersons;
     const out: { id: number; landmarks: typeof dm.frames[number]["landmarks"] }[] = [];
     for (const p of persons) {
       if (!p.frames || p.frames.length === 0) continue;
@@ -1284,6 +1299,49 @@ export default function PlayPage() {
                     </span>
                   </button>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Character selection — only when the dance map has multiple extracted dancers */}
+          {danceMap?.persons && danceMap.persons.length > 1 && (
+            <div className="mb-6 w-full max-w-md">
+              <p className="text-white/50 text-xs uppercase tracking-wider mb-2">
+                Choose a dancer to score against
+              </p>
+              <div className="flex gap-3 overflow-x-auto pb-2">
+                {danceMap.persons.map((p) => {
+                  const selected = p.id === selectedPersonId;
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => {
+                        setSelectedPersonId(p.id);
+                        selectedPersonIdRef.current = p.id;
+                      }}
+                      className={`relative flex-shrink-0 rounded-lg overflow-hidden ring-2 transition-all ${
+                        selected
+                          ? "ring-purple-400 shadow-lg shadow-purple-500/30"
+                          : "ring-white/10 hover:ring-white/30 opacity-70 hover:opacity-100"
+                      }`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={getPersonThumbnailURL(danceMap.meta.source_video, p.id, 5)}
+                        alt={p.label}
+                        className="w-28 h-36 object-cover bg-neutral-900"
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-transparent px-2 py-1.5">
+                        <p className="text-xs font-medium truncate">{p.label}</p>
+                      </div>
+                      {selected && (
+                        <div className="absolute top-1 right-1 w-5 h-5 rounded-full bg-purple-500 flex items-center justify-center text-xs">
+                          ✓
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
