@@ -1,0 +1,13 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+mediapipe>=0.10.14
+opencv-python-headless>=4.9.0
+yt-dlp>=2024.0
+python-multipart>=0.0.9
+# GPU acceleration (optional but recommended)
+torch>=2.0.0
+torchvision>=0.15.0
+onnxruntime>=1.16.0
+librosa>=0.10.0
+# Test framework (development)
+pytest>=8.0.0
