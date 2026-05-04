@@ -307,9 +307,8 @@ export function computePositionSimilarity(playerRaw: Landmark[], coachLandmarks:
 
 // === Velocity & Direction Comparison ===
 
-// Previous frames for velocity computation (per-player and per-coach)
-let _prevPlayerForVelocity: Landmark[] | null = null;
-let _prevCoachForVelocity: Landmark[] | null = null;
+// Velocity prev-frame buffers — kept on each ScoreState (see types.ts) so
+// multiple ScoreStates can run side-by-side without cross-contamination.
 
 /** Compute velocity vectors (displacement per frame) for key joints. Returns null if no previous frame. */
 function computeVelocities(
@@ -338,17 +337,14 @@ function computeVelocities(
  */
 export function computeVelocitySimilarity(
   playerRaw: Landmark[],
-  coachLandmarks: Landmark[]
+  coachLandmarks: Landmark[],
+  prevPlayer: Landmark[] | null = null,
+  prevCoach: Landmark[] | null = null,
 ): number {
   const player = mirrorLandmarks(playerRaw);
 
-  const playerVel = computeVelocities(player, _prevPlayerForVelocity);
-  // For coach, we need the previous coach landmarks from the pose buffer
-  const coachVel = computeVelocities(coachLandmarks, _prevCoachForVelocity);
-
-  // Store current as previous for next call
-  _prevPlayerForVelocity = player;
-  _prevCoachForVelocity = coachLandmarks;
+  const playerVel = computeVelocities(player, prevPlayer);
+  const coachVel = computeVelocities(coachLandmarks, prevCoach);
 
   if (!playerVel || !coachVel) return 0.5; // no history yet, neutral score
 
@@ -394,12 +390,31 @@ export function computeVelocitySimilarity(
   return 0.5 * speedSim + 0.5 * dirSim;
 }
 
-/** Compute combined (angle + position + velocity) similarity for a single frame pair. */
-export function computeCombinedSimilarity(playerRaw: Landmark[], coachLandmarks: Landmark[]): number {
+/** Compute combined similarity AND return the prev-frame buffers to feed the
+ *  next call. Used by the streaming scorer where velocity context matters. */
+function computeCombinedSimilarityWithVel(
+  playerRaw: Landmark[],
+  coachLandmarks: Landmark[],
+  prevPlayer: Landmark[] | null,
+  prevCoach: Landmark[] | null,
+): { sim: number; nextPrevPlayer: Landmark[]; nextPrevCoach: Landmark[] } {
   const angleSim = computeAngleSimilarity(playerRaw, coachLandmarks);
   const posSim = computePositionSimilarity(playerRaw, coachLandmarks);
-  const velSim = computeVelocitySimilarity(playerRaw, coachLandmarks);
-  return ANGLE_SIMILARITY_WEIGHT * angleSim + POSITION_SIMILARITY_WEIGHT * posSim + VELOCITY_SIMILARITY_WEIGHT * velSim;
+  const velSim = computeVelocitySimilarity(playerRaw, coachLandmarks, prevPlayer, prevCoach);
+  return {
+    sim:
+      ANGLE_SIMILARITY_WEIGHT * angleSim +
+      POSITION_SIMILARITY_WEIGHT * posSim +
+      VELOCITY_SIMILARITY_WEIGHT * velSim,
+    nextPrevPlayer: mirrorLandmarks(playerRaw),
+    nextPrevCoach: coachLandmarks,
+  };
+}
+
+/** Compute combined (angle + position + velocity) similarity for a single frame
+ *  pair. DTW pairwise path — no streaming velocity context. */
+export function computeCombinedSimilarity(playerRaw: Landmark[], coachLandmarks: Landmark[]): number {
+  return computeCombinedSimilarityWithVel(playerRaw, coachLandmarks, null, null).sim;
 }
 
 // === DTW Phrase Scoring ===
@@ -486,52 +501,41 @@ function measureMovement(curr: Landmark[], prev: Landmark[]): number {
   return count > 0 ? totalDisp / count : 0;
 }
 
-let _prevPlayerLandmarks: Landmark[] | null = null;
-
 /**
  * Check if the player is idle while the coach is moving.
- * Returns true if the player should be penalized (coach moving, player still).
- * Returns false if both are still (hold pose) or player is moving.
+ * Returns idle flag plus the new player-prev buffer to feed the next call.
  */
 function isPlayerIdleWhileCoachMoves(
   playerLandmarks: Landmark[],
   coachLandmarks: Landmark[] | null,
-  prevCoachLandmarks: Landmark[] | null
-): boolean {
-  if (!_prevPlayerLandmarks) {
-    _prevPlayerLandmarks = playerLandmarks;
-    return false;
+  prevPlayerLandmarks: Landmark[] | null,
+  prevCoachLandmarks: Landmark[] | null,
+): { idle: boolean; nextPrevPlayer: Landmark[] } {
+  if (!prevPlayerLandmarks) {
+    return { idle: false, nextPrevPlayer: playerLandmarks };
   }
 
-  const playerMovement = measureMovement(playerLandmarks, _prevPlayerLandmarks);
-  _prevPlayerLandmarks = playerLandmarks;
+  const playerMovement = measureMovement(playerLandmarks, prevPlayerLandmarks);
+  const nextPrevPlayer = playerLandmarks;
 
   const playerIsStill = playerMovement < MIN_MOVEMENT_THRESHOLD;
 
-  // If player is moving, no penalty
-  if (!playerIsStill) return false;
+  if (!playerIsStill) return { idle: false, nextPrevPlayer };
 
-  // Player is still — check if coach is also still
   if (coachLandmarks && prevCoachLandmarks) {
     const coachMovement = measureMovement(coachLandmarks, prevCoachLandmarks);
     const coachIsStill = coachMovement < MIN_MOVEMENT_THRESHOLD;
-    // Both still = holding pose = OK, don't penalize
-    if (coachIsStill) return false;
+    if (coachIsStill) return { idle: false, nextPrevPlayer };
   }
 
-  // Player still, coach moving = idle penalty
-  return true;
+  return { idle: true, nextPrevPlayer };
 }
 
-/** Reset all tracking state (call when starting a new game). */
+/** No-op since prev-state now lives on each ScoreState. Kept as an export so
+ *  existing call sites continue to compile during the multi-player rollout. */
 export function resetMovementTracking(): void {
-  _prevPlayerLandmarks = null;
-  _prevCoachForMovement = null;
-  _prevPlayerForVelocity = null;
-  _prevCoachForVelocity = null;
+  // intentionally empty
 }
-
-let _prevCoachForMovement: Landmark[] | null = null;
 
 /** Compute weighted angle similarity between player and coach poses. Returns 0-1. */
 export function computeAngleSimilarity(playerRaw: Landmark[], coachLandmarks: Landmark[]): number {
@@ -565,33 +569,56 @@ export function computeSimilarity(playerRaw: Landmark[], coachLandmarks: Landmar
   return computeAngleSimilarity(playerRaw, coachLandmarks);
 }
 
-/** Compute similarity with timing tolerance — tries multiple coach frames, returns best. Uses combined metric. */
+/** Compute similarity with timing tolerance — tries multiple coach frames,
+ *  returns best. Threads velocity prev-frame buffers through so multiple
+ *  parallel scorers (multi-player) don't share streaming state. */
 export function computeSimilarityWithTiming(
   playerLandmarks: Landmark[],
   currentMs: number,
   getCoachFrame: (ms: number) => PoseFrame | null,
-  latencyOffset: number = 0
-): { similarity: number; bestCoachLandmarks: Landmark[] | null } {
+  latencyOffset: number = 0,
+  prevPlayerForVelocity: Landmark[] | null = null,
+  prevCoachForVelocity: Landmark[] | null = null,
+): {
+  similarity: number;
+  bestCoachLandmarks: Landmark[] | null;
+  nextPrevPlayerForVelocity: Landmark[] | null;
+  nextPrevCoachForVelocity: Landmark[] | null;
+} {
   const windowStart = currentMs - TIMING_WINDOW_BEHIND_MS - latencyOffset;
   const windowEnd = currentMs + TIMING_WINDOW_AHEAD_MS - latencyOffset;
   const step = (windowEnd - windowStart) / (TIMING_SAMPLES - 1);
 
   let bestSimilarity = 0;
   let bestCoachLandmarks: Landmark[] | null = null;
+  let runningPrevPlayer: Landmark[] | null = prevPlayerForVelocity;
+  let runningPrevCoach: Landmark[] | null = prevCoachForVelocity;
 
   for (let i = 0; i < TIMING_SAMPLES; i++) {
     const sampleMs = windowStart + i * step;
     const coachFrame = getCoachFrame(sampleMs);
     if (!coachFrame) continue;
 
-    const sim = computeCombinedSimilarity(playerLandmarks, coachFrame.landmarks);
+    const { sim, nextPrevPlayer, nextPrevCoach } = computeCombinedSimilarityWithVel(
+      playerLandmarks,
+      coachFrame.landmarks,
+      runningPrevPlayer,
+      runningPrevCoach,
+    );
+    runningPrevPlayer = nextPrevPlayer;
+    runningPrevCoach = nextPrevCoach;
     if (sim > bestSimilarity) {
       bestSimilarity = sim;
       bestCoachLandmarks = coachFrame.landmarks;
     }
   }
 
-  return { similarity: bestSimilarity, bestCoachLandmarks };
+  return {
+    similarity: bestSimilarity,
+    bestCoachLandmarks,
+    nextPrevPlayerForVelocity: runningPrevPlayer,
+    nextPrevCoachForVelocity: runningPrevCoach,
+  };
 }
 
 /** Map similarity score to tier using the difficulty-appropriate ladder.
@@ -762,6 +789,10 @@ export function createScoreState(danceMap: DanceMap): ScoreState {
     fluencySum: 0,
     axisCount: 0,
     barSims: [],
+    prevPlayerForVelocity: null,
+    prevCoachForVelocity: null,
+    prevPlayerLandmarks: null,
+    prevCoachForMovement: null,
   };
 }
 
@@ -806,8 +837,13 @@ export function processScoringFrame(
   const currentCoachLandmarks = currentCoachFrame?.landmarks || null;
 
   // Movement gate: penalize if player is still while coach is dancing
-  const idle = isPlayerIdleWhileCoachMoves(playerLandmarks, currentCoachLandmarks, _prevCoachForMovement);
-  _prevCoachForMovement = currentCoachLandmarks;
+  const { idle, nextPrevPlayer: nextPrevPlayerLandmarks } = isPlayerIdleWhileCoachMoves(
+    playerLandmarks,
+    currentCoachLandmarks,
+    state.prevPlayerLandmarks,
+    state.prevCoachForMovement,
+  );
+  const nextPrevCoachForMovement = currentCoachLandmarks;
 
   if (idle) {
     const snapshot: ScoringSnapshot = {
@@ -834,14 +870,23 @@ export function processScoringFrame(
       fluencySum: state.fluencySum,
       axisCount: state.axisCount + 1,
       barSims: [...state.barSims, 0],
+      prevPlayerLandmarks: nextPrevPlayerLandmarks,
+      prevCoachForMovement: nextPrevCoachForMovement,
     };
   }
 
-  const { similarity: perFrameSim, bestCoachLandmarks } = computeSimilarityWithTiming(
+  const {
+    similarity: perFrameSim,
+    bestCoachLandmarks,
+    nextPrevPlayerForVelocity,
+    nextPrevCoachForVelocity,
+  } = computeSimilarityWithTiming(
     playerLandmarks,
     currentMs,
     getCoachFrame,
-    latencyOffset
+    latencyOffset,
+    state.prevPlayerForVelocity,
+    state.prevCoachForVelocity,
   );
 
   // Update pose buffer for DTW
@@ -928,5 +973,9 @@ export function processScoringFrame(
     fluencySum: state.fluencySum + fluencyAxis,
     axisCount: state.axisCount + 1,
     barSims: [...state.barSims, blendedSimilarity],
+    prevPlayerForVelocity: nextPrevPlayerForVelocity,
+    prevCoachForVelocity: nextPrevCoachForVelocity,
+    prevPlayerLandmarks: nextPrevPlayerLandmarks,
+    prevCoachForMovement: nextPrevCoachForMovement,
   };
 }

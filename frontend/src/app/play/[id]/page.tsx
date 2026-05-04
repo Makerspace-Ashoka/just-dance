@@ -274,8 +274,8 @@ export default function PlayPage() {
       if (latestResult.bg_capture) {
         setBgFrameCount(latestResult.bg_frames_captured || 0);
       } else {
-        const lmCount = latestResult.landmarks
-          ? countVisibleJoints(latestResult.landmarks)
+        const lmCount = latestResult.landmarks?.[0]
+          ? countVisibleJoints(latestResult.landmarks[0])
           : 0;
         setDebugInfo(
           `WS #${latestResult.frame} | joints: ${lmCount}/11 | mask: ${latestResult.mask ? "yes" : "no"}`
@@ -737,14 +737,16 @@ export default function PlayPage() {
 
       // --- CALIBRATION MODE ---
       if (state === "calibrating") {
-        // Draw player stick figure (mirrored, full screen)
-        if (result?.landmarks) {
-          const mirrored = result.landmarks.map((lm) => ({
+        // Draw player stick figure (mirrored, full screen). Calibration is
+        // single-player only — first detected pose drives the overlay.
+        const calibLm = result?.landmarks?.[0];
+        if (calibLm) {
+          const mirrored = calibLm.map((lm) => ({
             ...lm,
             x: 1 - lm.x,
           }));
           drawStickFigure(ctx, mirrored, 0, 0, w, h);
-          drawCalibrationOverlay(ctx, result.landmarks, w, h);
+          drawCalibrationOverlay(ctx, calibLm, w, h);
         }
 
         // Draw silhouette
@@ -809,14 +811,23 @@ export default function PlayPage() {
           }
         }
 
-        // --- Player skeleton (only in preview-with-camera, toggleable) ---
-        if (isPreview && !previewNoCameraRef.current && result?.landmarks) {
-          const mirrored = result.landmarks.map((lm) => ({ ...lm, x: 1 - lm.x }));
-          drawStickFigure(ctx, mirrored, 0, 0, w, h);
+        // --- Player skeletons (in preview-with-camera; multiplayer in real play) ---
+        const playerPoses = result?.landmarks ?? [];
+        const PERSON_COLORS_PLAYER = ["#06b6d4", "#f472b6", "#a855f7", "#22c55e", "#eab308", "#fb923c"];
+        if (isPreview && !previewNoCameraRef.current && playerPoses.length > 0) {
+          for (let pi = 0; pi < playerPoses.length; pi++) {
+            const mirrored = playerPoses[pi].map((lm) => ({ ...lm, x: 1 - lm.x }));
+            const playerColor = playerPoses.length > 1
+              ? PERSON_COLORS_PLAYER[pi % PERSON_COLORS_PLAYER.length]
+              : undefined;
+            drawStickFigure(ctx, mirrored, 0, 0, w, h, false, playerColor);
+          }
         }
 
         // --- SCORING (on beats when available, else every 500ms) ---
-        if (!isPreview && result?.landmarks && scoreStateRef.current) {
+        // Single-player path uses landmarks[0]; multiplayer expansion lands below.
+        const primaryPose = playerPoses[0];
+        if (!isPreview && primaryPose && scoreStateRef.current) {
           const beats = dm.meta.beats;
           let shouldScore = false;
           if (beats && beats.length > 0) {
@@ -835,8 +846,8 @@ export default function PlayPage() {
             // Visibility is set to 0 so the existing scoring gates (v >= 0.3
             // in computeAngle/Position/Velocity) skip them naturally.
             const playerLm = topHalfOnlyRef.current
-              ? maskBottomHalf(result.landmarks)
-              : result.landmarks;
+              ? maskBottomHalf(primaryPose)
+              : primaryPose;
             const coachGetter = topHalfOnlyRef.current
               ? (ms: number) => {
                   const cf = getCoachFrame(ms);
@@ -875,7 +886,7 @@ export default function PlayPage() {
                   combo_mult: ss.comboMultiplier,
                   top_half_only: topHalfOnlyRef.current,
                   difficulty: difficultyRef.current,
-                  player_visible_count: result.landmarks.filter((l) => l.v >= 0.3).length,
+                  player_visible_count: primaryPose.filter((l) => l.v >= 0.3).length,
                 });
               }
             }

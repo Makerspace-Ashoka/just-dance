@@ -99,4 +99,10 @@ export interface ScoreState {
   axisCount: number;
   // Per-beat similarity history within the current bar (for bar-mean tier emission).
   barSims: number[];
+  // Per-state previous-frame buffers — folded into state so multiple ScoreStates
+  // can run side-by-side (multi-player) without cross-contamination.
+  prevPlayerForVelocity: Landmark[] | null;
+  prevCoachForVelocity: Landmark[] | null;
+  prevPlayerLandmarks: Landmark[] | null;
+  prevCoachForMovement: Landmark[] | null;
 }

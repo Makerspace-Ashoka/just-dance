@@ -7,7 +7,9 @@ import type { Landmark } from "@/lib/types";
 export interface WSResult {
   t: number;
   frame: number;
-  landmarks: Landmark[] | null;
+  // Multi-pose: backend returns one landmark array per detected dancer.
+  // For single-player play, consumers should read landmarks?.[0].
+  landmarks: Landmark[][] | null;
   mask: string | null; // base64 PNG
   bg_capture?: boolean;
   bg_frames_captured?: number;
@@ -19,6 +21,9 @@ export interface WSEvent {
   has_background?: boolean;
   segmenter?: string;
   gpu?: { device: string; backend: string | null };
+  num_poses?: number;
+  max_poses_supported?: number;
+  n?: number;
 }
 
 export function useWebSocket() {
@@ -66,11 +71,18 @@ export function useWebSocket() {
     }
   }, []);
 
+  const setNumPoses = useCallback((n: number) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ cmd: "set_num_poses", n }));
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
       wsRef.current?.close();
     };
   }, []);
 
-  return { connect, disconnect, sendFrame, sendCommand, connected, latestResult, latestEvent };
+  return { connect, disconnect, sendFrame, sendCommand, setNumPoses, connected, latestResult, latestEvent };
 }

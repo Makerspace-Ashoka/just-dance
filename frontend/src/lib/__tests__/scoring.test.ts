@@ -232,6 +232,49 @@ describe("processScoringFrame integration (QSD axes)", () => {
   });
 });
 
+describe("multi-state isolation (multi-player support)", () => {
+  function dm(): DanceMap {
+    return {
+      version: 2,
+      id: "test",
+      meta: {
+        title: "t", artist: "a", difficulty: "easy", bpm: 120,
+        beats: [0, 500, 1000, 1500, 2000],
+        duration_ms: 2000,
+        source_video: "", audio_file: null, mask_video: null, created_at: "",
+      },
+      persons: [],
+      trim: { start_ms: 0, end_ms: 2000 },
+      frames: [],
+      gold_moves: [],
+    };
+  }
+  function asPlayer(coach: ReturnType<typeof makeSkeleton>) {
+    return coach.map((l) => ({ ...l, x: 1 - l.x }));
+  }
+
+  it("two ScoreStates run side-by-side without cross-contamination", () => {
+    const coach = makeSkeleton();
+    const getCoach = (_ms: number): PoseFrame => ({ t: 0, landmarks: coach });
+
+    let solo = createScoreState(dm());
+    let parallelA = createScoreState(dm());
+    let parallelB = createScoreState(dm());
+    const player = asPlayer(coach);
+
+    for (let i = 0; i < 6; i++) {
+      solo = processScoringFrame(solo, player, i * 500, getCoach, false, 0);
+      parallelA = processScoringFrame(parallelA, player, i * 500, getCoach, false, 0);
+      parallelB = processScoringFrame(parallelB, asPlayer(makeSkeleton({ noise: 0.3 }, i)), i * 500, getCoach, false, 0);
+    }
+
+    expect(parallelA.totalScore).toBe(solo.totalScore);
+    expect(parallelA.accuracySum).toBeCloseTo(solo.accuracySum, 5);
+    expect(parallelA.barSims).toEqual(solo.barSims);
+    expect(parallelB.totalScore).not.toBe(solo.totalScore);
+  });
+});
+
 describe("computeAngleSimilarity", () => {
   it("identity ≈ 1", () => {
     const coach = makeSkeleton();

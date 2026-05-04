@@ -165,22 +165,19 @@ class RealtimeTracker:
         device: GPU device - "auto", "cpu", "mps", or "cuda"
     """
 
-    def __init__(self, segmenter_type: str = "mediapipe", device: str = "auto"):
+    MAX_POSES = 6
+
+    def __init__(self, segmenter_type: str = "mediapipe", device: str = "auto", num_poses: int = 1):
         self.segmenter_type = segmenter_type
         self.device_info = detect_gpu()
         self.depth_camera_info = detect_depth_camera()
+        self._num_poses = max(1, min(num_poses, self.MAX_POSES))
 
-        # Pose Landmarker (always MediaPipe — best for real-time pose)
-        pose_options = PoseLandmarkerOptions(
-            base_options=BaseOptions(
-                model_asset_path=str(MODELS_DIR / "pose_landmarker.task")
-            ),
-            running_mode=RunningMode.VIDEO,
-            num_poses=1,
-            min_pose_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-        )
-        self.pose_landmarker = PoseLandmarker.create_from_options(pose_options)
+        # Pose Landmarker (always MediaPipe — best for real-time pose).
+        # num_poses controls how many concurrent skeletons MediaPipe will return
+        # per frame. Single-player default is 1; multi-player pages bump this
+        # via set_num_poses().
+        self.pose_landmarker = self._build_pose_landmarker(self._num_poses)
 
         # Depth camera (optional — any supported type)
         self.depth_cam = None
@@ -225,12 +222,9 @@ class RealtimeTracker:
         self._bg_frames: list[np.ndarray] = []
         self._bg_capturing = False
 
-        # Kalman filter for landmark smoothing + prediction
-        self._kalman = PoseKalmanFilter(
-            num_landmarks=33,
-            process_noise=0.003,
-            measurement_noise=0.015,
-        )
+        # One Kalman filter per concurrent pose so multi-player smoothing
+        # does not cross-contaminate. _kalmans is rebuilt by set_num_poses().
+        self._kalmans = [self._make_kalman() for _ in range(self._num_poses)]
 
         # Temporal mask smoothing
         self._prev_mask: np.ndarray | None = None
@@ -239,6 +233,42 @@ class RealtimeTracker:
         self._morph_kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (_MORPH_KERNEL_SIZE, _MORPH_KERNEL_SIZE)
         )
+
+    def _build_pose_landmarker(self, num_poses: int):
+        opts = PoseLandmarkerOptions(
+            base_options=BaseOptions(
+                model_asset_path=str(MODELS_DIR / "pose_landmarker.task")
+            ),
+            running_mode=RunningMode.VIDEO,
+            num_poses=num_poses,
+            min_pose_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        return PoseLandmarker.create_from_options(opts)
+
+    def _make_kalman(self) -> PoseKalmanFilter:
+        return PoseKalmanFilter(num_landmarks=33, process_noise=0.003, measurement_noise=0.015)
+
+    def set_num_poses(self, n: int) -> int:
+        """Reconfigure the tracker for N concurrent poses. Returns the value
+        actually applied (clamped to [1, MAX_POSES]). Idempotent — no-op if
+        already at this count."""
+        n = max(1, min(int(n), self.MAX_POSES))
+        if n == self._num_poses:
+            return n
+        try:
+            self.pose_landmarker.close()
+        except Exception:
+            pass
+        self.pose_landmarker = self._build_pose_landmarker(n)
+        self._kalmans = [self._make_kalman() for _ in range(n)]
+        self._num_poses = n
+        return n
+
+    @staticmethod
+    def _centroid_x(landmarks: list[dict]) -> float:
+        xs = [lm["x"] for lm in landmarks if lm.get("v", 0) > 0.3]
+        return sum(xs) / len(xs) if xs else 0.5
 
     def start_bg_capture(self):
         self._bg_capturing = True
@@ -264,9 +294,21 @@ class RealtimeTracker:
         np_arr = np.frombuffer(jpeg_bytes, np.uint8)
         return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-    def _smooth_landmarks(self, landmarks: list[dict]) -> list[dict]:
-        """Smooth landmarks using Kalman filter (position + velocity tracking)."""
-        return self._kalman.update(landmarks)
+    def _smooth_landmarks(self, landmarks: list[dict], idx: int = 0) -> list[dict]:
+        """Smooth landmarks using the Kalman filter for pose index `idx`."""
+        return self._kalmans[idx].update(landmarks)
+
+    def _smooth_pose_set(self, raw_poses: list[list[dict]]) -> list[list[dict]]:
+        """Sort raw poses by centroid x and smooth each through its dedicated
+        Kalman so frame-to-frame ordering remains stable. If MediaPipe returns
+        fewer poses than configured, only the first len() Kalmans are touched."""
+        sorted_poses = sorted(raw_poses, key=self._centroid_x)
+        out: list[list[dict]] = []
+        for i, raw in enumerate(sorted_poses):
+            if i >= len(self._kalmans):
+                break
+            out.append(self._kalmans[i].update(raw))
+        return out
 
     def _compute_bg_diff_mask(self, bgr_frame: np.ndarray) -> np.ndarray:
         if self._background is None:
@@ -373,8 +415,8 @@ class RealtimeTracker:
             landmarks = None
             pose_result = self.pose_landmarker.detect_for_video(mp_image, timestamp_ms)
             if pose_result.pose_landmarks and len(pose_result.pose_landmarks) > 0:
-                raw = landmarks_to_dict(pose_result.pose_landmarks[0])
-                landmarks = self._smooth_landmarks(raw)
+                raw_poses = [landmarks_to_dict(p) for p in pose_result.pose_landmarks]
+                landmarks = self._smooth_pose_set(raw_poses)
 
             # Depth mask is already clean — just smooth temporally
             smoothed_mask = self._temporal_smooth_mask(depth_mask)
@@ -423,11 +465,11 @@ class RealtimeTracker:
         pose_result = pose_future.result()
         raw_mask = seg_future.result() if seg_future else None
 
-        # Process pose
+        # Process pose — multi-pose returned as list-of-lists (sorted by x).
         landmarks = None
         if pose_result.pose_landmarks and len(pose_result.pose_landmarks) > 0:
-            raw = landmarks_to_dict(pose_result.pose_landmarks[0])
-            landmarks = self._smooth_landmarks(raw)
+            raw_poses = [landmarks_to_dict(p) for p in pose_result.pose_landmarks]
+            landmarks = self._smooth_pose_set(raw_poses)
 
         # Process mask
         mask_png = None
@@ -468,6 +510,8 @@ class RealtimeTracker:
             "gpu": self.device_info,
             "depth_camera": self.depth_camera_info,
             "has_background": self.has_background(),
+            "num_poses": self._num_poses,
+            "max_poses_supported": self.MAX_POSES,
         }
 
     def close(self):

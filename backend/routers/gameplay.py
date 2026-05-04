@@ -115,6 +115,14 @@ async def gameplay_ws(
                         "success": success,
                     })
                     continue
+                elif cmd == "set_num_poses":
+                    n = int(cmd_data.get("n", 1))
+                    applied = tracker.set_num_poses(n)
+                    await websocket.send_json({
+                        "event": "num_poses_set",
+                        "n": applied,
+                    })
+                    continue
 
             if "bytes" in message:
                 data = message["bytes"]
