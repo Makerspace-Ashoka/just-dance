@@ -189,6 +189,13 @@ export default function PlayPage() {
   const [displayStars, setDisplayStars] = useState(0);
   const [displayTier, setDisplayTier] = useState<{ tier: ScoreTier; ts: number } | null>(null);
   const [finalScore, setFinalScore] = useState<ScoreState | null>(null);
+  // Multi-player done state: one ScoreState per player.
+  const [finalScores, setFinalScores] = useState<ScoreState[] | null>(null);
+  // Per-player leaderboard UI state, indexed by player idx.
+  const [mpPlayerNames, setMpPlayerNames] = useState<string[]>([]);
+  const [mpSubmittedEntries, setMpSubmittedEntries] = useState<(LeaderboardEntry | null)[]>([]);
+  const [mpSubmitErrors, setMpSubmitErrors] = useState<(string | null)[]>([]);
+  const mpSubmittedRef = useRef<boolean[]>([]);
   const displayScoreRef = useRef(0); // for smooth lerping in canvas
   const [trackerInfo, setTrackerInfo] = useState<TrackerInfo | null>(null);
   const [activeSegmenter, setActiveSegmenter] = useState("");
@@ -217,6 +224,21 @@ export default function PlayPage() {
   const [submitting, setSubmitting] = useState(false);
   const submittedRef = useRef(false);
 
+  // Multi-player. numPlayers >= 2 triggers auto-mapping at game start
+  // (centroid → nearest coach.avg_position) and per-player score states.
+  const [numPlayers, setNumPlayers] = useState(1);
+  const numPlayersRef = useRef(1);
+  // Locked once auto-mapping completes. -1 = not yet assigned for that player.
+  const playerToCoachIdRef = useRef<number[]>([]);
+  // Per-player ScoreState. Index aligned with playerToCoachIdRef.
+  const playerScoreStatesRef = useRef<(ScoreState | null)[]>([]);
+  // Centroid samples collected for the first ~1s while we wait for stable poses.
+  const mappingSamplesRef = useRef<{ centroidX: number; centroidY: number }[][]>([]);
+  const [mappingLocked, setMappingLocked] = useState(false);
+  const mappingLockedRef = useRef(false);
+  // Banner: shown briefly after mapping locks so each player sees their assignment.
+  const [mappingBanner, setMappingBanner] = useState<{ playerIdx: number; coachLabel: string; color: string }[] | null>(null);
+
   // Camera selection
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>("");
@@ -239,7 +261,7 @@ export default function PlayPage() {
   const danceMapRef = useRef(danceMap);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
 
-  const { connect, disconnect, sendFrame, sendCommand, connected, latestResult, latestEvent } =
+  const { connect, disconnect, sendFrame, sendCommand, setNumPoses, connected, latestResult, latestEvent } =
     useWebSocket();
 
   const displayTierRef = useRef(displayTier);
@@ -587,9 +609,18 @@ export default function PlayPage() {
       await new Promise((r) => setTimeout(r, 1000));
     }
 
-    // Initialize scoring
+    // Initialize scoring — single ScoreState for legacy single-player path,
+    // plus a per-player array used when numPlayers > 1.
     if (danceMapRef.current && !previewModeRef.current) {
-      scoreStateRef.current = createScoreState(danceMapRef.current);
+      const dm = danceMapRef.current;
+      const n = numPlayersRef.current;
+      scoreStateRef.current = createScoreState(dm);
+      playerScoreStatesRef.current = Array.from({ length: n }, () => createScoreState(dm));
+      playerToCoachIdRef.current = Array(n).fill(-1);
+      mappingSamplesRef.current = Array.from({ length: n }, () => []);
+      mappingLockedRef.current = false;
+      setMappingLocked(false);
+      setMappingBanner(null);
       debugLogRef.current = [];
       resetMovementTracking();
       lastScoredMsRef.current = 0;
@@ -601,6 +632,8 @@ export default function PlayPage() {
       setDisplayTier(null);
       setFinalScore(null);
       displayScoreRef.current = 0;
+      // Tell the backend tracker how many concurrent poses to detect.
+      setNumPoses(n);
     }
 
     setGameState("playing");
@@ -800,27 +833,50 @@ export default function PlayPage() {
           ctx.drawImage(coachVideo, drawX, drawY, drawW, drawH);
         }
 
-        // --- Coach skeletons (one per person, only in preview modes) ---
+        // --- Coach skeletons ---
+        // Distinct colours per dancer; multiplayer reuses this palette so the
+        // player skeleton matches its assigned coach.
+        const PERSON_COLORS = ["#06b6d4", "#f472b6", "#a855f7", "#22c55e", "#eab308", "#fb923c"];
         if (isPreview && showCoachSkeletonRef.current) {
           const coachFrames = getAllCoachFrames(currentMs);
-          // Distinct colours per dancer so multi-person maps are readable.
-          const PERSON_COLORS = ["#06b6d4", "#f472b6", "#a855f7", "#22c55e", "#eab308", "#fb923c"];
           for (const cf of coachFrames) {
+            const color = gold ? "#ffd700" : PERSON_COLORS[cf.id % PERSON_COLORS.length];
+            drawStickFigure(ctx, cf.landmarks, 0, 0, w, h, gold, color);
+          }
+        } else if (!isPreview && numPlayersRef.current > 1 && dm.persons) {
+          // In real multiplayer play, draw each assigned coach in their colour
+          // so the player can see who they're being scored against.
+          const coachFrames = getAllCoachFrames(currentMs);
+          const assignedIds = new Set(playerToCoachIdRef.current.filter((id) => id !== -1));
+          for (const cf of coachFrames) {
+            if (!assignedIds.has(cf.id)) continue;
             const color = gold ? "#ffd700" : PERSON_COLORS[cf.id % PERSON_COLORS.length];
             drawStickFigure(ctx, cf.landmarks, 0, 0, w, h, gold, color);
           }
         }
 
-        // --- Player skeletons (in preview-with-camera; multiplayer in real play) ---
+        // --- Player skeletons ---
+        // Single-player & preview: per-bone colour. Multiplayer real play:
+        // each player's skeleton matches the colour of their assigned coach.
         const playerPoses = result?.landmarks ?? [];
-        const PERSON_COLORS_PLAYER = ["#06b6d4", "#f472b6", "#a855f7", "#22c55e", "#eab308", "#fb923c"];
         if (isPreview && !previewNoCameraRef.current && playerPoses.length > 0) {
           for (let pi = 0; pi < playerPoses.length; pi++) {
             const mirrored = playerPoses[pi].map((lm) => ({ ...lm, x: 1 - lm.x }));
             const playerColor = playerPoses.length > 1
-              ? PERSON_COLORS_PLAYER[pi % PERSON_COLORS_PLAYER.length]
+              ? PERSON_COLORS[pi % PERSON_COLORS.length]
               : undefined;
             drawStickFigure(ctx, mirrored, 0, 0, w, h, false, playerColor);
+          }
+        } else if (!isPreview && numPlayersRef.current > 1 && playerPoses.length > 0) {
+          for (let pi = 0; pi < numPlayersRef.current; pi++) {
+            const lm = playerPoses[pi];
+            if (!lm) continue;
+            const mirrored = lm.map((p) => ({ ...p, x: 1 - p.x }));
+            const coachId = playerToCoachIdRef.current[pi];
+            const color = coachId !== -1
+              ? PERSON_COLORS[coachId % PERSON_COLORS.length]
+              : "#888";
+            drawStickFigure(ctx, mirrored, 0, 0, w, h, false, color);
           }
         }
 
@@ -842,6 +898,115 @@ export default function PlayPage() {
           if (shouldScore) {
             lastScoredMsRef.current = currentMs;
 
+            // --- MULTIPLAYER auto-mapping during the first ~30 stable frames ---
+            if (numPlayersRef.current > 1 && !mappingLockedRef.current) {
+              const n = numPlayersRef.current;
+              const coaches = dm.persons || [];
+              if (playerPoses.length >= n && coaches.length > 0) {
+                for (let i = 0; i < n; i++) {
+                  const lm = playerPoses[i];
+                  if (!lm) continue;
+                  const visible = lm.filter((l) => l.v >= 0.3);
+                  if (visible.length < 5) continue;
+                  const cx = visible.reduce((s, l) => s + l.x, 0) / visible.length;
+                  const cy = visible.reduce((s, l) => s + l.y, 0) / visible.length;
+                  // Player x is mirrored on screen (1 - x); compare in screen coords
+                  // because coach.avg_position is in source coords, which the renderer
+                  // also draws in source coords (no mirror on coach side).
+                  mappingSamplesRef.current[i].push({ centroidX: 1 - cx, centroidY: cy });
+                }
+                if (mappingSamplesRef.current.every((s) => s.length >= 30)) {
+                  // Greedy nearest-coach assignment in screen coords. Coach
+                  // avg_position is non-mirrored (source frame); player is
+                  // mirrored. Compare 1-px to coach.x.
+                  const playerC = mappingSamplesRef.current.map((arr) => {
+                    const ax = arr.reduce((a, p) => a + p.centroidX, 0) / arr.length;
+                    const ay = arr.reduce((a, p) => a + p.centroidY, 0) / arr.length;
+                    return { x: ax, y: ay };
+                  });
+                  const used = new Set<number>();
+                  const assignments = Array<number>(n).fill(-1);
+                  for (let pass = 0; pass < n; pass++) {
+                    let bestP = -1, bestC = -1, bestD = Infinity;
+                    for (let p = 0; p < n; p++) {
+                      if (assignments[p] !== -1) continue;
+                      for (const c of coaches) {
+                        if (used.has(c.id)) continue;
+                        const dx = playerC[p].x - (1 - c.avg_position.x);
+                        const dy = playerC[p].y - c.avg_position.y;
+                        const d = dx * dx + dy * dy;
+                        if (d < bestD) { bestD = d; bestP = p; bestC = c.id; }
+                      }
+                    }
+                    if (bestP === -1) break;
+                    assignments[bestP] = bestC;
+                    used.add(bestC);
+                  }
+                  playerToCoachIdRef.current = assignments;
+                  mappingLockedRef.current = true;
+                  setMappingLocked(true);
+                  const palette = ["#06b6d4", "#f472b6", "#a855f7", "#22c55e", "#eab308", "#fb923c"];
+                  const banner = assignments.map((coachId, i) => {
+                    const coach = coaches.find((c) => c.id === coachId);
+                    return {
+                      playerIdx: i,
+                      coachLabel: coach?.label || `Coach ${coachId}`,
+                      color: palette[((coachId === -1 ? 0 : coachId) % palette.length)],
+                    };
+                  });
+                  setMappingBanner(banner);
+                  setTimeout(() => setMappingBanner(null), 4500);
+                }
+              }
+            }
+
+            // --- Multi-player scoring ---
+            if (numPlayersRef.current > 1 && mappingLockedRef.current) {
+              const n = numPlayersRef.current;
+              for (let i = 0; i < n; i++) {
+                const lm = playerPoses[i];
+                const coachId = playerToCoachIdRef.current[i];
+                const ss = playerScoreStatesRef.current[i];
+                if (!lm || coachId === -1 || !ss) continue;
+                const playerLm = topHalfOnlyRef.current ? maskBottomHalf(lm) : lm;
+                const coachGetter = (ms: number) => {
+                  // Look up the i-th player's assigned coach frames.
+                  const person = dm.persons?.find((p) => p.id === coachId);
+                  if (!person?.frames?.length) return null;
+                  let lo = 0, hi = person.frames.length - 1;
+                  while (lo < hi) {
+                    const mid = (lo + hi) >> 1;
+                    if (person.frames[mid].t < ms) lo = mid + 1;
+                    else hi = mid;
+                  }
+                  const fr = person.frames[lo];
+                  return topHalfOnlyRef.current ? { ...fr, landmarks: maskBottomHalf(fr.landmarks) } : fr;
+                };
+                playerScoreStatesRef.current[i] = processScoringFrame(
+                  ss, playerLm, currentMs, coachGetter, gold, calibratedLatencyRef.current,
+                );
+              }
+              // Display the highest current score across players in the top HUD.
+              const states = playerScoreStatesRef.current.filter((s): s is ScoreState => s !== null);
+              if (states.length > 0) {
+                const top = states.reduce((m, s) => (s.totalScore > m.totalScore ? s : m));
+                setDisplayScore(top.totalScore);
+                setDisplayStars(top.stars);
+              }
+              // Per-bar tier flash uses the leader's barSims for now.
+              if (states.length > 0) {
+                const leader = states.reduce((m, s) => (s.barSims.length > m.barSims.length ? s : m));
+                const completed = Math.floor(leader.barSims.length / BEATS_PER_BAR);
+                if (completed > lastBarEmittedRef.current) {
+                  const t = aggregateBarTier(leader.barSims, difficultyRef.current);
+                  if (t) setDisplayTier({ tier: t, ts: Date.now() });
+                  lastBarEmittedRef.current = completed;
+                }
+              }
+              return; // skip the single-player path below
+            }
+
+            // --- Single-player path (numPlayers === 1) ---
             // Debug: top-half-only mode masks landmarks 23-32 on both sides.
             // Visibility is set to 0 so the existing scoring gates (v >= 0.3
             // in computeAngle/Position/Velocity) skip them naturally.
@@ -1087,7 +1252,21 @@ export default function PlayPage() {
         ctx.fillRect(barMargin, barY, barW * Math.min(1, Math.max(0, progress)), 4);
 
         if (currentMs >= trimEnd) {
-          if (scoreStateRef.current) {
+          if (numPlayersRef.current > 1) {
+            const states = playerScoreStatesRef.current
+              .filter((s): s is ScoreState => s !== null)
+              .map((s) => ({ ...s }));
+            setFinalScores(states);
+            setMpPlayerNames(states.map(() => playerName || ""));
+            setMpSubmittedEntries(states.map(() => null));
+            setMpSubmitErrors(states.map(() => null));
+            mpSubmittedRef.current = states.map(() => false);
+            // Also stash the leader as finalScore for any single-score code.
+            if (states.length > 0) {
+              const leader = states.reduce((m, s) => (s.totalScore > m.totalScore ? s : m));
+              setFinalScore({ ...leader });
+            }
+          } else if (scoreStateRef.current) {
             setFinalScore({ ...scoreStateRef.current });
           }
           setGameState("done");
@@ -1299,6 +1478,35 @@ export default function PlayPage() {
             </div>
           )}
 
+          {/* Multi-player picker — only when the dance has multiple coaches */}
+          {danceMap?.persons && danceMap.persons.length > 1 && (
+            <div className="mb-6 flex flex-col items-start gap-2 text-sm w-full max-w-md">
+              <span className="text-white/50">
+                Players ({danceMap.persons.length} coaches available)
+              </span>
+              <div className="flex gap-2 flex-wrap">
+                {Array.from({ length: danceMap.persons.length }, (_, i) => i + 1).map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => { setNumPlayers(n); numPlayersRef.current = n; }}
+                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                      numPlayers === n
+                        ? "bg-purple-600 text-white ring-1 ring-purple-400"
+                        : "bg-white/10 text-white/60 hover:bg-white/20"
+                    }`}
+                  >
+                    {n} {n === 1 ? "player" : "players"}
+                  </button>
+                ))}
+              </div>
+              {numPlayers > 1 && (
+                <p className="text-white/40 text-xs italic">
+                  Players will be auto-assigned to coaches by stage position once the dance starts.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Difficulty override — controls the tier-threshold ladder used for the popup */}
           <div className="mb-6 flex items-center gap-2 text-sm">
             <span className="text-white/50 mr-1">Difficulty:</span>
@@ -1443,7 +1651,105 @@ export default function PlayPage() {
           <h1 className="text-3xl font-bold mb-1">{danceMap?.meta.title}</h1>
           <p className="text-white/40 mb-6">{danceMap?.meta.artist}</p>
 
-          {finalScore ? (
+          {/* Multi-player results — one card per player */}
+          {finalScores && finalScores.length > 1 && danceMap && (
+            <div className="w-full max-w-2xl px-6 mb-8">
+              <p className="text-white/40 text-xs uppercase tracking-wider mb-4 text-center">
+                Final scores
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {finalScores.map((s, i) => {
+                  const coachId = playerToCoachIdRef.current[i] ?? -1;
+                  const palette = ["#06b6d4", "#f472b6", "#a855f7", "#22c55e", "#eab308", "#fb923c"];
+                  const color = coachId !== -1 ? palette[coachId % palette.length] : "#888";
+                  const submitted = mpSubmittedEntries[i];
+                  const err = mpSubmitErrors[i];
+                  const name = mpPlayerNames[i] ?? "";
+                  return (
+                    <div key={i} className="bg-white/5 rounded-xl p-4 ring-1" style={{ borderColor: color }}>
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
+                        <span className="font-semibold">Player {i + 1}</span>
+                      </div>
+                      <p className="text-3xl font-bold mb-1">{s.totalScore.toLocaleString()}</p>
+                      <div className="text-lg mb-2">
+                        {Array.from({ length: 7 }, (_, j) => (
+                          <span key={j} className={j < s.stars ? "text-yellow-400" : "text-white/15"}>
+                            {j < s.stars ? "★" : "☆"}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="text-xs text-white/50 mb-3">
+                        Streak {s.maxStreak}x · Gold {s.goldMovesHit}/{s.goldMovesTotal}
+                      </div>
+                      {!submitted ? (
+                        <div className="flex gap-2">
+                          <input
+                            value={name}
+                            onChange={(e) => setMpPlayerNames((arr) => {
+                              const next = [...arr];
+                              next[i] = e.target.value.slice(0, 24);
+                              return next;
+                            })}
+                            placeholder={`Player ${i + 1} name`}
+                            maxLength={24}
+                            className="flex-1 px-2 py-1.5 rounded bg-white/10 text-sm text-white placeholder-white/30 outline-none focus:bg-white/15"
+                          />
+                          <button
+                            onClick={async () => {
+                              if (mpSubmittedRef.current[i] || !danceMap) return;
+                              const trimmed = (mpPlayerNames[i] ?? "").trim();
+                              if (!trimmed) {
+                                setMpSubmitErrors((arr) => { const n = [...arr]; n[i] = "Enter a name"; return n; });
+                                return;
+                              }
+                              try {
+                                if (!mpSubmittedRef.current.some(Boolean)) {
+                                  try { localStorage.setItem("jd:playerName", trimmed); } catch {}
+                                }
+                                const ax = Math.max(s.axisCount, 1);
+                                const entry = await submitScore(danceMap.id, {
+                                  player_name: trimmed,
+                                  total_score: Math.round(s.totalScore),
+                                  stars: s.stars,
+                                  gold_hit: s.goldMovesHit,
+                                  gold_total: s.goldMovesTotal,
+                                  max_streak: s.maxStreak,
+                                  difficulty: difficultyRef.current,
+                                  accuracy: Number((s.accuracySum / ax).toFixed(4)),
+                                  timing: Number((s.timingSum / ax).toFixed(4)),
+                                  fluency: Number((s.fluencySum / ax).toFixed(4)),
+                                });
+                                mpSubmittedRef.current[i] = true;
+                                setMpSubmittedEntries((arr) => { const n = [...arr]; n[i] = entry; return n; });
+                                setMpSubmitErrors((arr) => { const n = [...arr]; n[i] = null; return n; });
+                              } catch (e) {
+                                setMpSubmitErrors((arr) => { const n = [...arr]; n[i] = e instanceof Error ? e.message : "Submit failed"; return n; });
+                              }
+                            }}
+                            className="px-3 py-1.5 rounded bg-purple-600 text-sm font-semibold hover:bg-purple-500"
+                          >
+                            Submit
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-purple-300">Submitted as {submitted.player_name}</p>
+                      )}
+                      {err && <p className="text-red-400 text-xs mt-2">{err}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                onClick={() => router.push(`/leaderboard/${danceMap.id}`)}
+                className="mt-4 mx-auto block text-sm text-purple-300 hover:text-purple-200"
+              >
+                View full leaderboard →
+              </button>
+            </div>
+          )}
+
+          {finalScores && finalScores.length > 1 ? null : finalScore ? (
             <div className="w-full max-w-md px-6">
               {/* Score + Stars */}
               <div className="text-center mb-6">
@@ -1640,6 +1946,18 @@ export default function PlayPage() {
                 setSubmittedEntry(null);
                 setTopEntries(null);
                 setSubmitError(null);
+                // Reset multi-player state for the next session
+                setFinalScores(null);
+                setMpPlayerNames([]);
+                setMpSubmittedEntries([]);
+                setMpSubmitErrors([]);
+                mpSubmittedRef.current = [];
+                playerScoreStatesRef.current = [];
+                playerToCoachIdRef.current = [];
+                mappingSamplesRef.current = [];
+                mappingLockedRef.current = false;
+                setMappingLocked(false);
+                setMappingBanner(null);
                 streamRef.current?.getTracks().forEach((t) => t.stop());
                 disconnect();
                 const audio = audioRef.current;
@@ -1656,6 +1974,26 @@ export default function PlayPage() {
               Back to Library
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Multiplayer assignment banner — shown briefly after auto-mapping locks */}
+      {gameState === "playing" && mappingBanner && mappingBanner.length > 0 && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 px-5 py-3 rounded-xl bg-black/70 backdrop-blur-sm border border-white/10">
+          <p className="text-white/50 text-xs uppercase tracking-wider mb-1.5 text-center">Assignments locked</p>
+          <div className="flex gap-4">
+            {mappingBanner.map((b) => (
+              <div key={b.playerIdx} className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full" style={{ backgroundColor: b.color }} />
+                <span className="text-sm">P{b.playerIdx + 1} → {b.coachLabel}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {gameState === "playing" && numPlayersRef.current > 1 && !mappingLocked && (
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 px-5 py-3 rounded-xl bg-black/60 backdrop-blur-sm border border-white/10">
+          <p className="text-white/70 text-sm">Take your places — assigning dancers…</p>
         </div>
       )}
 
