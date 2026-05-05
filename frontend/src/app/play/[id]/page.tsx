@@ -1395,9 +1395,20 @@ export default function PlayPage() {
             Position yourself inside the guide
           </p>
           {/* UI overlay */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50">
-          <h1 className="text-4xl font-bold mb-2">{danceMap?.meta.title}</h1>
-          <p className="text-white/50 text-lg mb-10">{danceMap?.meta.artist}</p>
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center backdrop-blur-sm"
+            style={{
+              backgroundImage:
+                "radial-gradient(at 20% 0%, rgba(168,85,247,0.45), transparent 60%), radial-gradient(at 80% 0%, rgba(236,72,153,0.4), transparent 60%), radial-gradient(at 50% 100%, rgba(6,182,212,0.3), transparent 60%), linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0.7))",
+            }}
+          >
+          <h1
+            className="text-5xl font-extrabold mb-2 bg-gradient-to-r from-pink-300 via-fuchsia-300 to-cyan-300 bg-clip-text text-transparent"
+            style={{ filter: "drop-shadow(0 0 24px rgba(217,70,239,0.45))" }}
+          >
+            {danceMap?.meta.title}
+          </h1>
+          <p className="text-white/70 text-lg mb-10">{danceMap?.meta.artist}</p>
           {/* Configuration panel */}
           {trackerInfo && (
             <div className="mb-8 px-6 py-4 bg-white/5 border border-white/10 rounded-xl max-w-lg w-full">
@@ -1489,10 +1500,10 @@ export default function PlayPage() {
                   <button
                     key={n}
                     onClick={() => { setNumPlayers(n); numPlayersRef.current = n; }}
-                    className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
                       numPlayers === n
-                        ? "bg-purple-600 text-white ring-1 ring-purple-400"
-                        : "bg-white/10 text-white/60 hover:bg-white/20"
+                        ? "bg-gradient-to-r from-fuchsia-500 to-purple-600 text-white ring-2 ring-fuchsia-300/60 shadow-lg shadow-fuchsia-500/40"
+                        : "bg-white/10 text-white/70 hover:bg-white/20 border border-white/10 hover:border-white/30"
                     }`}
                   >
                     {n} {n === 1 ? "player" : "players"}
@@ -1510,19 +1521,26 @@ export default function PlayPage() {
           {/* Difficulty override — controls the tier-threshold ladder used for the popup */}
           <div className="mb-6 flex items-center gap-2 text-sm">
             <span className="text-white/50 mr-1">Difficulty:</span>
-            {(["easy", "medium", "hard", "extreme"] as Difficulty[]).map((d) => (
-              <button
-                key={d}
-                onClick={() => { setDifficulty(d); difficultyRef.current = d; }}
-                className={`px-3 py-1.5 rounded-lg text-sm capitalize transition-colors ${
-                  difficulty === d
-                    ? "bg-purple-600 text-white ring-1 ring-purple-400"
-                    : "bg-white/10 text-white/60 hover:bg-white/20"
-                }`}
-              >
-                {d}
-              </button>
-            ))}
+            {(["easy", "medium", "hard", "extreme"] as Difficulty[]).map((d) => {
+              const tone =
+                d === "easy" ? "from-emerald-400 to-green-600 ring-emerald-300/60 shadow-emerald-500/40" :
+                d === "medium" ? "from-cyan-400 to-blue-600 ring-cyan-300/60 shadow-cyan-500/40" :
+                d === "hard" ? "from-orange-400 to-rose-600 ring-orange-300/60 shadow-orange-500/40" :
+                "from-fuchsia-400 to-purple-700 ring-fuchsia-300/60 shadow-fuchsia-500/40";
+              return (
+                <button
+                  key={d}
+                  onClick={() => { setDifficulty(d); difficultyRef.current = d; }}
+                  className={`px-4 py-1.5 rounded-lg text-sm capitalize font-semibold transition-all ${
+                    difficulty === d
+                      ? `bg-gradient-to-r ${tone} text-white ring-2 shadow-lg`
+                      : "bg-white/10 text-white/70 hover:bg-white/20 border border-white/10"
+                  }`}
+                >
+                  {d}
+                </button>
+              );
+            })}
           </div>
 
           {/* Debug-only toggles. Off by default; do not persist across navigation. */}
@@ -1556,7 +1574,7 @@ export default function PlayPage() {
 
           <button
             onClick={startCalibration}
-            className="px-10 py-4 bg-gradient-to-r from-pink-500 to-purple-600 rounded-xl text-2xl font-bold hover:opacity-90 transition-opacity"
+            className="px-12 py-4 rounded-2xl text-2xl font-extrabold tracking-tight transition-all bg-gradient-to-r from-pink-500 via-fuchsia-500 to-purple-600 hover:from-pink-400 hover:via-fuchsia-400 hover:to-purple-500 shadow-2xl shadow-fuchsia-500/40 hover:shadow-fuchsia-500/60 hover:scale-[1.02] active:scale-[0.98]"
           >
             Start Dance
           </button>
@@ -1647,9 +1665,20 @@ export default function PlayPage() {
 
       {/* Done screen */}
       {gameState === "done" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-10 overflow-y-auto py-10">
-          <h1 className="text-3xl font-bold mb-1">{danceMap?.meta.title}</h1>
-          <p className="text-white/40 mb-6">{danceMap?.meta.artist}</p>
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center z-10 overflow-y-auto py-10 backdrop-blur-md"
+          style={{
+            backgroundImage:
+              "radial-gradient(at 25% 0%, rgba(236,72,153,0.45), transparent 55%), radial-gradient(at 75% 0%, rgba(168,85,247,0.4), transparent 55%), radial-gradient(at 50% 100%, rgba(6,182,212,0.35), transparent 60%), linear-gradient(to bottom, rgba(0,0,0,0.78), rgba(0,0,0,0.88))",
+          }}
+        >
+          <h1
+            className="text-4xl font-extrabold mb-1 bg-gradient-to-r from-pink-300 via-fuchsia-300 to-cyan-300 bg-clip-text text-transparent"
+            style={{ filter: "drop-shadow(0 0 24px rgba(217,70,239,0.45))" }}
+          >
+            {danceMap?.meta.title}
+          </h1>
+          <p className="text-white/60 mb-6">{danceMap?.meta.artist}</p>
 
           {/* Multi-player results — one card per player */}
           {finalScores && finalScores.length > 1 && danceMap && (
@@ -1666,7 +1695,15 @@ export default function PlayPage() {
                   const err = mpSubmitErrors[i];
                   const name = mpPlayerNames[i] ?? "";
                   return (
-                    <div key={i} className="bg-white/5 rounded-xl p-4 ring-1" style={{ borderColor: color }}>
+                    <div
+                      key={i}
+                      className="rounded-2xl p-4 backdrop-blur-sm transition-all hover:-translate-y-0.5"
+                      style={{
+                        backgroundImage: `linear-gradient(135deg, ${color}28, rgba(255,255,255,0.04))`,
+                        boxShadow: `0 10px 40px -10px ${color}66`,
+                        border: `1px solid ${color}55`,
+                      }}
+                    >
                       <div className="flex items-center gap-2 mb-2">
                         <span className="w-3 h-3 rounded-full" style={{ backgroundColor: color }} />
                         <span className="font-semibold">Player {i + 1}</span>
@@ -1753,12 +1790,15 @@ export default function PlayPage() {
             <div className="w-full max-w-md px-6">
               {/* Score + Stars */}
               <div className="text-center mb-6">
-                <p className="text-6xl font-bold text-white mb-2">
+                <p
+                  className="text-7xl font-extrabold mb-2 bg-gradient-to-r from-amber-200 via-yellow-300 to-amber-400 bg-clip-text text-transparent"
+                  style={{ filter: "drop-shadow(0 0 28px rgba(251,191,36,0.55))" }}
+                >
                   {finalScore.totalScore.toLocaleString()}
                 </p>
-                <div className="text-2xl mb-1">
+                <div className="text-3xl mb-1" style={{ filter: "drop-shadow(0 0 12px rgba(251,191,36,0.5))" }}>
                   {Array.from({ length: 7 }, (_, i) => (
-                    <span key={i} className={i < finalScore.stars ? "text-yellow-400" : "text-white/15"}>
+                    <span key={i} className={i < finalScore.stars ? "text-yellow-300" : "text-white/15"}>
                       {i < finalScore.stars ? "\u2605" : "\u2606"}
                     </span>
                   ))}
@@ -1979,21 +2019,30 @@ export default function PlayPage() {
 
       {/* Multiplayer assignment banner — shown briefly after auto-mapping locks */}
       {gameState === "playing" && mappingBanner && mappingBanner.length > 0 && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 px-5 py-3 rounded-xl bg-black/70 backdrop-blur-sm border border-white/10">
-          <p className="text-white/50 text-xs uppercase tracking-wider mb-1.5 text-center">Assignments locked</p>
-          <div className="flex gap-4">
+        <div
+          className="absolute top-20 left-1/2 -translate-x-1/2 z-20 px-6 py-3.5 rounded-2xl backdrop-blur-md border border-white/20 shadow-2xl shadow-black/50"
+          style={{ backgroundImage: "linear-gradient(135deg, rgba(168,85,247,0.45), rgba(236,72,153,0.35))" }}
+        >
+          <p className="text-white/80 text-xs uppercase tracking-widest mb-2 text-center font-semibold">Assignments locked</p>
+          <div className="flex gap-5">
             {mappingBanner.map((b) => (
               <div key={b.playerIdx} className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded-full" style={{ backgroundColor: b.color }} />
-                <span className="text-sm">P{b.playerIdx + 1} → {b.coachLabel}</span>
+                <span
+                  className="w-3.5 h-3.5 rounded-full"
+                  style={{ backgroundColor: b.color, boxShadow: `0 0 12px ${b.color}` }}
+                />
+                <span className="text-sm font-medium">P{b.playerIdx + 1} → {b.coachLabel}</span>
               </div>
             ))}
           </div>
         </div>
       )}
       {gameState === "playing" && numPlayersRef.current > 1 && !mappingLocked && (
-        <div className="absolute top-20 left-1/2 -translate-x-1/2 z-20 px-5 py-3 rounded-xl bg-black/60 backdrop-blur-sm border border-white/10">
-          <p className="text-white/70 text-sm">Take your places — assigning dancers…</p>
+        <div
+          className="absolute top-20 left-1/2 -translate-x-1/2 z-20 px-6 py-3 rounded-2xl backdrop-blur-md border border-white/15"
+          style={{ backgroundImage: "linear-gradient(135deg, rgba(6,182,212,0.3), rgba(168,85,247,0.25))" }}
+        >
+          <p className="text-white/90 text-sm font-medium">Take your places — assigning dancers…</p>
         </div>
       )}
 

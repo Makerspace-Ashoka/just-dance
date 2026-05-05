@@ -64,7 +64,11 @@ export default function HomePage() {
 
   return (
     <div
-      className="min-h-screen bg-[#0a0a0a] text-white"
+      className="relative min-h-screen text-white bg-[#0a0a0a] overflow-hidden"
+      style={{
+        backgroundImage:
+          "radial-gradient(at 15% 0%, rgba(168,85,247,0.25), transparent 55%), radial-gradient(at 85% 0%, rgba(236,72,153,0.22), transparent 55%), radial-gradient(at 50% 100%, rgba(6,182,212,0.18), transparent 60%), linear-gradient(to bottom, #0a0612, #0a0a0a)",
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         if (!isDragging) setIsDragging(true);
@@ -76,9 +80,12 @@ export default function HomePage() {
       onDrop={handleDrop}
     >
       {/* Header */}
-      <header className="border-b border-white/10 px-8 py-6">
+      <header className="relative border-b border-white/10 px-8 py-6 backdrop-blur-sm bg-black/20">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-pink-500 via-purple-500 to-cyan-500 bg-clip-text text-transparent">
+          <h1
+            className="text-4xl font-extrabold tracking-tight bg-gradient-to-r from-pink-400 via-fuchsia-400 to-cyan-300 bg-clip-text text-transparent"
+            style={{ filter: "drop-shadow(0 0 18px rgba(217,70,239,0.35))" }}
+          >
             Just Dance
           </h1>
           <div className="flex gap-3">
@@ -91,13 +98,13 @@ export default function HomePage() {
             />
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="px-5 py-2.5 bg-white/10 rounded-lg font-semibold hover:bg-white/20 transition-colors"
+              className="px-5 py-2.5 rounded-xl font-semibold transition-all bg-white/10 hover:bg-white/20 border border-white/10 hover:border-white/20"
             >
               Import .dance
             </button>
             <Link
               href="/ingest"
-              className="px-6 py-2.5 bg-gradient-to-r from-pink-500 to-purple-600 rounded-lg font-semibold hover:opacity-90 transition-opacity"
+              className="px-6 py-2.5 rounded-xl font-semibold transition-all bg-gradient-to-r from-pink-500 via-fuchsia-500 to-purple-600 hover:from-pink-400 hover:via-fuchsia-400 hover:to-purple-500 shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50"
             >
               + Add Song
             </Link>
@@ -133,7 +140,7 @@ export default function HomePage() {
             {maps.map((map) => (
               <div
                 key={map.id}
-                className="bg-white/5 border border-white/10 rounded-xl p-6 flex items-center justify-between hover:bg-white/[0.07] transition-colors"
+                className="group relative bg-gradient-to-br from-white/[0.08] via-white/[0.05] to-white/[0.02] border border-white/15 rounded-2xl p-6 flex items-center justify-between transition-all hover:border-purple-400/40 hover:shadow-xl hover:shadow-purple-500/15 hover:-translate-y-0.5 backdrop-blur-sm"
               >
                 <div className="flex-1">
                   <h2 className="text-xl font-semibold">{map.meta.title}</h2>
@@ -144,29 +151,29 @@ export default function HomePage() {
                     {map.gold_moves_count} gold moves
                   </p>
                 </div>
-                <div className="flex gap-3 ml-6">
+                <div className="flex gap-2 ml-6">
                   <Link
                     href={`/editor/${map.id}`}
-                    className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition-colors text-sm"
+                    className="px-4 py-2 rounded-lg text-sm font-medium transition-all bg-white/10 hover:bg-white/15 border border-white/10 hover:border-cyan-400/40 text-white/80 hover:text-cyan-200"
                   >
                     Edit
                   </Link>
                   <Link
                     href={`/leaderboard/${map.id}`}
-                    className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition-colors text-sm"
+                    className="px-4 py-2 rounded-lg text-sm font-medium transition-all bg-white/10 hover:bg-amber-400/20 border border-white/10 hover:border-amber-300/50 text-white/80 hover:text-amber-200"
                   >
                     Leaderboard
                   </Link>
                   <Link
                     href={`/play/${map.id}`}
-                    className="px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 rounded-lg hover:opacity-90 transition-opacity text-sm font-semibold"
+                    className="px-5 py-2 rounded-lg text-sm font-bold transition-all bg-gradient-to-r from-emerald-400 via-green-500 to-emerald-600 hover:from-emerald-300 hover:via-green-400 hover:to-emerald-500 shadow-lg shadow-emerald-500/30 hover:shadow-emerald-500/50"
                   >
                     Play
                   </Link>
                   <a
                     href={getDanceBundleURL(map.id)}
                     download={`${map.meta.title || "dance"}.dance`}
-                    className="px-4 py-2 bg-white/10 rounded-lg hover:bg-white/20 transition-colors text-sm"
+                    className="px-4 py-2 rounded-lg text-sm font-medium transition-all bg-white/10 hover:bg-white/15 border border-white/10 hover:border-white/20 text-white/80"
                     title="Download as .dance bundle"
                   >
                     Export
