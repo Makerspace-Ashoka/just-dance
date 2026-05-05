@@ -24,6 +24,23 @@ fi
 
 echo "Using $($PYTHON_CMD --version)"
 
+# Node.js (frontend dev server + npm install)
+if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+    echo "Error: Node.js and npm are required for the frontend."
+    echo "Install with: brew install node      (macOS)"
+    echo "              sudo apt install nodejs npm (Ubuntu/Debian)"
+    exit 1
+fi
+echo "Using $(node --version) / npm $(npm --version)"
+
+# ffmpeg — required for yt-dlp audio extraction and pose video processing
+if ! command -v ffmpeg &> /dev/null; then
+    echo "Error: ffmpeg is required (yt-dlp audio + video frame ops)."
+    echo "Install with: brew install ffmpeg    (macOS)"
+    echo "              sudo apt install ffmpeg (Ubuntu/Debian)"
+    exit 1
+fi
+
 # Create venv if it doesn't exist
 if [ ! -d "$ROOT_DIR/backend/.venv" ]; then
     echo "Creating Python virtual environment..."
@@ -34,13 +51,6 @@ source "$ROOT_DIR/backend/.venv/bin/activate"
 
 echo "Installing Python dependencies..."
 pip install -q -r "$ROOT_DIR/backend/requirements.txt"
-
-# Check for ffmpeg
-if ! command -v ffmpeg &> /dev/null; then
-    echo "Warning: ffmpeg not found. Audio extraction will not work."
-    echo "Install with: brew install ffmpeg  (macOS)"
-    echo "              sudo apt install ffmpeg (Ubuntu/Debian)"
-fi
 
 # Install frontend deps if needed
 if [ ! -d "$ROOT_DIR/frontend/node_modules" ]; then
