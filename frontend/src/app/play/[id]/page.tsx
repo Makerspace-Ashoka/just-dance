@@ -1205,9 +1205,20 @@ export default function PlayPage() {
             Position yourself inside the guide
           </p>
           {/* UI overlay */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50">
-          <h1 className="text-4xl font-bold mb-2">{danceMap?.meta.title}</h1>
-          <p className="text-white/50 text-lg mb-10">{danceMap?.meta.artist}</p>
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center backdrop-blur-sm"
+            style={{
+              backgroundImage:
+                "radial-gradient(at 20% 0%, rgba(168,85,247,0.45), transparent 60%), radial-gradient(at 80% 0%, rgba(236,72,153,0.4), transparent 60%), radial-gradient(at 50% 100%, rgba(6,182,212,0.3), transparent 60%), linear-gradient(to bottom, rgba(0,0,0,0.55), rgba(0,0,0,0.7))",
+            }}
+          >
+          <h1
+            className="text-5xl font-extrabold mb-2 bg-gradient-to-r from-pink-300 via-fuchsia-300 to-cyan-300 bg-clip-text text-transparent"
+            style={{ filter: "drop-shadow(0 0 24px rgba(217,70,239,0.45))" }}
+          >
+            {danceMap?.meta.title}
+          </h1>
+          <p className="text-white/70 text-lg mb-10">{danceMap?.meta.artist}</p>
           {/* Configuration panel */}
           {trackerInfo && (
             <div className="mb-8 px-6 py-4 bg-white/5 border border-white/10 rounded-xl max-w-lg w-full">
@@ -1288,22 +1299,49 @@ export default function PlayPage() {
             </div>
           )}
 
+          {/* Name — required to start. Pre-filled from localStorage. */}
+          <div className="mb-6 w-full max-w-md">
+            <label className="block text-white/60 text-xs uppercase tracking-wider mb-2">
+              Your name
+            </label>
+            <input
+              value={playerName}
+              onChange={(e) => {
+                const v = e.target.value.slice(0, 24);
+                setPlayerName(v);
+                try {
+                  if (v.trim().length > 0) localStorage.setItem("jd:playerName", v.trim());
+                } catch {}
+              }}
+              placeholder="Enter your name to start"
+              maxLength={24}
+              className="w-full px-4 py-3 rounded-xl bg-white/10 border border-white/15 text-white placeholder-white/30 outline-none focus:bg-white/15 focus:border-fuchsia-400/60 focus:ring-2 focus:ring-fuchsia-400/30 transition-all"
+            />
+          </div>
+
           {/* Difficulty override — controls the tier-threshold ladder used for the popup */}
           <div className="mb-6 flex items-center gap-2 text-sm">
             <span className="text-white/50 mr-1">Difficulty:</span>
-            {(["easy", "medium", "hard", "extreme"] as Difficulty[]).map((d) => (
-              <button
-                key={d}
-                onClick={() => { setDifficulty(d); difficultyRef.current = d; }}
-                className={`px-3 py-1.5 rounded-lg text-sm capitalize transition-colors ${
-                  difficulty === d
-                    ? "bg-purple-600 text-white ring-1 ring-purple-400"
-                    : "bg-white/10 text-white/60 hover:bg-white/20"
-                }`}
-              >
-                {d}
-              </button>
-            ))}
+            {(["easy", "medium", "hard", "extreme"] as Difficulty[]).map((d) => {
+              const tone =
+                d === "easy" ? "from-emerald-400 to-green-600 ring-emerald-300/60 shadow-emerald-500/40" :
+                d === "medium" ? "from-cyan-400 to-blue-600 ring-cyan-300/60 shadow-cyan-500/40" :
+                d === "hard" ? "from-orange-400 to-rose-600 ring-orange-300/60 shadow-orange-500/40" :
+                "from-fuchsia-400 to-purple-700 ring-fuchsia-300/60 shadow-fuchsia-500/40";
+              return (
+                <button
+                  key={d}
+                  onClick={() => { setDifficulty(d); difficultyRef.current = d; }}
+                  className={`px-4 py-1.5 rounded-lg text-sm capitalize font-semibold transition-all ${
+                    difficulty === d
+                      ? `bg-gradient-to-r ${tone} text-white ring-2 shadow-lg`
+                      : "bg-white/10 text-white/70 hover:bg-white/20 border border-white/10"
+                  }`}
+                >
+                  {d}
+                </button>
+              );
+            })}
           </div>
 
           {/* Debug-only toggles. Off by default; do not persist across navigation. */}
@@ -1337,10 +1375,18 @@ export default function PlayPage() {
 
           <button
             onClick={startCalibration}
-            className="px-10 py-4 bg-gradient-to-r from-pink-500 to-purple-600 rounded-xl text-2xl font-bold hover:opacity-90 transition-opacity"
+            disabled={playerName.trim().length === 0}
+            className={`px-12 py-4 rounded-2xl text-2xl font-extrabold tracking-tight transition-all ${
+              playerName.trim().length === 0
+                ? "bg-white/10 text-white/30 cursor-not-allowed border border-white/10"
+                : "bg-gradient-to-r from-pink-500 via-fuchsia-500 to-purple-600 hover:from-pink-400 hover:via-fuchsia-400 hover:to-purple-500 shadow-2xl shadow-fuchsia-500/40 hover:shadow-fuchsia-500/60 hover:scale-[1.02] active:scale-[0.98]"
+            }`}
           >
             Start Dance
           </button>
+          {playerName.trim().length === 0 && (
+            <p className="mt-3 text-sm text-white/50">Enter your name above to start</p>
+          )}
           <div className="mt-4 flex gap-3">
             <button
               onClick={startPreviewNoCamera}
@@ -1428,18 +1474,32 @@ export default function PlayPage() {
 
       {/* Done screen */}
       {gameState === "done" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-10 overflow-y-auto py-10">
-          <h1 className="text-3xl font-bold mb-1">{danceMap?.meta.title}</h1>
-          <p className="text-white/40 mb-6">{danceMap?.meta.artist}</p>
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center z-10 overflow-y-auto py-10 backdrop-blur-md"
+          style={{
+            backgroundImage:
+              "radial-gradient(at 25% 0%, rgba(236,72,153,0.45), transparent 55%), radial-gradient(at 75% 0%, rgba(168,85,247,0.4), transparent 55%), radial-gradient(at 50% 100%, rgba(6,182,212,0.35), transparent 60%), linear-gradient(to bottom, rgba(0,0,0,0.78), rgba(0,0,0,0.88))",
+          }}
+        >
+          <h1
+            className="text-4xl font-extrabold mb-1 bg-gradient-to-r from-pink-300 via-fuchsia-300 to-cyan-300 bg-clip-text text-transparent"
+            style={{ filter: "drop-shadow(0 0 24px rgba(217,70,239,0.45))" }}
+          >
+            {danceMap?.meta.title}
+          </h1>
+          <p className="text-white/60 mb-6">{danceMap?.meta.artist}</p>
 
           {finalScore ? (
             <div className="w-full max-w-md px-6">
               {/* Score + Stars */}
               <div className="text-center mb-6">
-                <p className="text-6xl font-bold text-white mb-2">
+                <p
+                  className="text-7xl font-extrabold mb-2 bg-gradient-to-r from-amber-200 via-yellow-300 to-amber-400 bg-clip-text text-transparent"
+                  style={{ filter: "drop-shadow(0 0 28px rgba(251,191,36,0.55))" }}
+                >
                   {finalScore.totalScore.toLocaleString()}
                 </p>
-                <div className="text-2xl mb-1">
+                <div className="text-3xl mb-1" style={{ filter: "drop-shadow(0 0 12px rgba(251,191,36,0.5))" }}>
                   {Array.from({ length: 7 }, (_, i) => (
                     <span key={i} className={i < finalScore.stars ? "text-yellow-400" : "text-white/15"}>
                       {i < finalScore.stars ? "\u2605" : "\u2606"}
