@@ -498,16 +498,15 @@ export default function PlayPage() {
     captureLoop();
   }, [connect, sendFrame]);
 
-  // Start background capture, then calibration
+  // Start the dance directly — no background capture, no body-detection wait.
+  // The scoring timing window (±300/+100ms) absorbs the usual camera-to-display
+  // lag, so calibration is no longer required to get a usable start.
   const startCalibration = useCallback(async () => {
     // Stop preview camera (game webcam will take over)
     if (previewStreamRef.current) {
       previewStreamRef.current.getTracks().forEach((t) => t.stop());
       previewStreamRef.current = null;
     }
-
-    setGameState("bg_capture");
-    setBgFrameCount(0);
 
     // Preload audio
     const audio = audioRef.current;
@@ -517,18 +516,13 @@ export default function PlayPage() {
 
     try {
       await startWebcam();
-      // Tell backend to start capturing background
-      sendCommand("start_bg_capture");
-
-      // Capture for 3 seconds, then finish
-      await new Promise((r) => setTimeout(r, 3000));
-      sendCommand("finish_bg_capture");
-      // Transition to calibrating happens via latestEvent handler
+      calibratedLatencyRef.current = 0;
+      startPlayingRef.current();
     } catch (e) {
       setDebugInfo(`Error: ${e instanceof Error ? e.message : "webcam/WS failed"}`);
       setGameState("ready");
     }
-  }, [startWebcam, sendCommand]);
+  }, [startWebcam]);
 
   // Preview mode (no camera) — just play video + skeleton
   const startPreviewNoCamera = useCallback(async () => {
@@ -556,28 +550,24 @@ export default function PlayPage() {
     }
   }, []);
 
-  // Preview mode (with camera) — webcam + video + skeleton, no scoring, no auto-start
+  // Preview mode (with camera) — webcam + video + skeleton, no scoring.
+  // Skips bg capture and the body-detection wait, same as the real flow.
   const startPreviewWithCamera = useCallback(async () => {
     setPreviewMode(true);
     previewModeRef.current = true;
     previewNoCameraRef.current = false;
-    setGameState("bg_capture");
-    setBgFrameCount(0);
 
     const audio = audioRef.current;
     if (audio) audio.load();
 
     try {
       await startWebcam();
-      sendCommand("start_bg_capture");
-      await new Promise((r) => setTimeout(r, 3000));
-      sendCommand("finish_bg_capture");
-      // After bg capture, go straight to countdown (no calibration wait)
+      startPlayingRef.current();
     } catch (e) {
       setDebugInfo(`Error: ${e instanceof Error ? e.message : "webcam/WS failed"}`);
       setGameState("ready");
     }
-  }, [startWebcam, sendCommand]);
+  }, [startWebcam]);
 
   // Transition from calibration to countdown to playing
   const startPlaying = useCallback(async () => {
