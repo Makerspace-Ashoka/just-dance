@@ -799,8 +799,11 @@ export default function PlayPage() {
           }
         }
 
-        // --- Player skeleton (only in preview-with-camera, toggleable) ---
-        if (isPreview && !previewNoCameraRef.current && result?.landmarks) {
+        // --- Player skeleton ---
+        // Preview-with-camera shows the full skeleton. Real play also shows
+        // it (mirrored, full opacity) so the player can see pose detection
+        // is alive and self-correct in real time.
+        if (result?.landmarks && (isPreview ? !previewNoCameraRef.current : true)) {
           const mirrored = result.landmarks.map((lm) => ({ ...lm, x: 1 - lm.x }));
           drawStickFigure(ctx, mirrored, 0, 0, w, h);
         }
