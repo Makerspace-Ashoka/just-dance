@@ -189,6 +189,20 @@ export default function HomePage() {
             ))}
           </div>
         )}
+
+        {/* Footer credit — only revealed when the user scrolls to the bottom */}
+        <footer className="mt-20 mb-4 text-center text-sm">
+          <p className="text-white/40">
+            Developed at Makerspace Ashoka by{" "}
+            <span className="text-white/70 font-medium">Ojas Tripathi</span>
+          </p>
+          <p
+            className="mt-2 text-pink-300/80 italic"
+            style={{ filter: "drop-shadow(0 0 8px rgba(244,114,182,0.4))" }}
+          >
+            for Sandy <span className="text-pink-400">♥</span>
+          </p>
+        </footer>
       </main>
     </div>
   );
