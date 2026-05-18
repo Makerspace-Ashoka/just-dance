@@ -171,7 +171,9 @@ export default function PlayPage() {
   const [countdown, setCountdown] = useState(3);
   const [debugInfo, setDebugInfo] = useState("");
   const [calibrationReady, setCalibrationReady] = useState(false);
-  const [showCoachSkeleton, setShowCoachSkeleton] = useState(true);
+  // Coach skeleton is shown in preview only (debug aid); real play shows
+  // the coach video, not a skeleton overlay. See GOTCHAS.md.
+  const [showCoachSkeleton, setShowCoachSkeleton] = useState(false);
   const [showCoachVideo, setShowCoachVideo] = useState(true);
   const showCoachVideoRef = useRef(true);
   const [previewMode, setPreviewMode] = useState(false);
@@ -498,37 +500,42 @@ export default function PlayPage() {
     captureLoop();
   }, [connect, sendFrame]);
 
-  // Start the dance directly — no background capture, no body-detection wait.
-  // The scoring timing window (±300/+100ms) absorbs the usual camera-to-display
-  // lag, so calibration is no longer required to get a usable start.
+  // Calibration: capture a clean background plate (~3s), then wait until the
+  // pose detector locks onto a full body, then auto-start the song. See
+  // GOTCHAS.md — bg_capture is load-bearing for silhouette quality and the
+  // body-detection wait doubles as a WS pipeline sanity check.
   const startCalibration = useCallback(async () => {
-    // Stop preview camera (game webcam will take over)
     if (previewStreamRef.current) {
       previewStreamRef.current.getTracks().forEach((t) => t.stop());
       previewStreamRef.current = null;
     }
 
-    // Preload audio
+    setGameState("bg_capture");
+    setBgFrameCount(0);
+
     const audio = audioRef.current;
-    if (audio) {
-      audio.load();
-    }
+    if (audio) audio.load();
 
     try {
       await startWebcam();
-      calibratedLatencyRef.current = 0;
-      startPlayingRef.current();
+      sendCommand("start_bg_capture");
+      await new Promise((r) => setTimeout(r, 3000));
+      sendCommand("finish_bg_capture");
+      // bg_capture_finished event → calibrating → startPlaying once body detected
     } catch (e) {
       setDebugInfo(`Error: ${e instanceof Error ? e.message : "webcam/WS failed"}`);
       setGameState("ready");
     }
-  }, [startWebcam]);
+  }, [startWebcam, sendCommand]);
 
   // Preview mode (no camera) — just play video + skeleton
   const startPreviewNoCamera = useCallback(async () => {
     setPreviewMode(true);
     previewModeRef.current = true;
     previewNoCameraRef.current = true;
+    // Force coach skeleton on for previews — that's the whole point of preview.
+    setShowCoachSkeleton(true);
+    showCoachSkeletonRef.current = true;
     setGameState("countdown");
     for (let i = 3; i > 0; i--) {
       setCountdown(i);
@@ -551,23 +558,30 @@ export default function PlayPage() {
   }, []);
 
   // Preview mode (with camera) — webcam + video + skeleton, no scoring.
-  // Skips bg capture and the body-detection wait, same as the real flow.
+  // Runs the same bg_capture step as the real flow so the silhouette
+  // quality on the preview matches what scoring will see.
   const startPreviewWithCamera = useCallback(async () => {
     setPreviewMode(true);
     previewModeRef.current = true;
     previewNoCameraRef.current = false;
+    setShowCoachSkeleton(true);
+    showCoachSkeletonRef.current = true;
+    setGameState("bg_capture");
+    setBgFrameCount(0);
 
     const audio = audioRef.current;
     if (audio) audio.load();
 
     try {
       await startWebcam();
-      startPlayingRef.current();
+      sendCommand("start_bg_capture");
+      await new Promise((r) => setTimeout(r, 3000));
+      sendCommand("finish_bg_capture");
     } catch (e) {
       setDebugInfo(`Error: ${e instanceof Error ? e.message : "webcam/WS failed"}`);
       setGameState("ready");
     }
-  }, [startWebcam]);
+  }, [startWebcam, sendCommand]);
 
   // Transition from calibration to countdown to playing
   const startPlaying = useCallback(async () => {
@@ -725,47 +739,70 @@ export default function PlayPage() {
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, w, h);
 
+      // Decode any new mask once per frame — both calibration (full silhouette)
+      // and playing (PiP corner) read the same currentMaskBitmap.
+      if (result?.mask && result.frame !== lastMaskFrame) {
+        lastMaskFrame = result.frame;
+        decodeMask(result.mask).then((bmp) => {
+          if (currentMaskBitmap) currentMaskBitmap.close();
+          currentMaskBitmap = bmp;
+        });
+      }
+
+      // Shared helper: draw the silhouette into a rectangle on `ctx`, tinted,
+      // mirrored so the player sees themselves correctly.
+      const drawSilhouette = (
+        dx: number, dy: number, dw: number, dh: number,
+        color: string, alpha: number,
+      ) => {
+        if (!currentMaskBitmap) return;
+        const oc = offscreenRef.current!;
+        oc.width = dw;
+        oc.height = dh;
+        const octx = oc.getContext("2d")!;
+        octx.clearRect(0, 0, dw, dh);
+        octx.save();
+        octx.translate(dw, 0);
+        octx.scale(-1, 1);
+        octx.drawImage(currentMaskBitmap, 0, 0, dw, dh);
+        octx.restore();
+        octx.globalCompositeOperation = "source-in";
+        octx.fillStyle = color;
+        octx.fillRect(0, 0, dw, dh);
+        octx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(oc, dx, dy);
+        ctx.globalAlpha = 1;
+      };
+
       // --- CALIBRATION MODE ---
+      // Big, bright silhouette + a tall framing guide so the player can
+      // position themselves before the dance begins.
       if (state === "calibrating") {
-        // Draw player stick figure (mirrored, full screen)
+        // Body-position guide: a rounded rectangle target the player fills.
+        const guideW = w * 0.28;
+        const guideH = h * 0.78;
+        const guideX = (w - guideW) / 2;
+        const guideY = h * 0.07;
+        ctx.save();
+        ctx.strokeStyle = calibrationReady ? "rgba(74,222,128,0.7)" : "rgba(168,85,247,0.5)";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([12, 8]);
+        ctx.beginPath();
+        ctx.roundRect(guideX, guideY, guideW, guideH, 24);
+        ctx.stroke();
+        ctx.restore();
+
+        // Full-screen silhouette in cyan so the player sees themselves.
+        drawSilhouette(0, 0, w, h, calibrationReady ? "#4ade80" : "#06b6d4", 0.55);
+
+        // Subtle stick figure on top to show joint tracking is alive.
         if (result?.landmarks) {
-          const mirrored = result.landmarks.map((lm) => ({
-            ...lm,
-            x: 1 - lm.x,
-          }));
+          const mirrored = result.landmarks.map((lm) => ({ ...lm, x: 1 - lm.x }));
+          ctx.globalAlpha = 0.7;
           drawStickFigure(ctx, mirrored, 0, 0, w, h);
-          drawCalibrationOverlay(ctx, result.landmarks, w, h);
-        }
-
-        // Draw silhouette
-        if (result?.mask && result.frame !== lastMaskFrame) {
-          lastMaskFrame = result.frame;
-          decodeMask(result.mask).then((bmp) => {
-            if (currentMaskBitmap) currentMaskBitmap.close();
-            currentMaskBitmap = bmp;
-          });
-        }
-
-        if (currentMaskBitmap) {
-          const oc = offscreenRef.current!;
-          oc.width = w;
-          oc.height = h;
-          const octx = oc.getContext("2d")!;
-          octx.clearRect(0, 0, w, h);
-          // Mirror the mask
-          octx.save();
-          octx.translate(w, 0);
-          octx.scale(-1, 1);
-          octx.drawImage(currentMaskBitmap, 0, 0, w, h);
-          octx.restore();
-          octx.globalCompositeOperation = "source-in";
-          octx.fillStyle = "#06b6d4";
-          octx.fillRect(0, 0, w, h);
-          octx.globalCompositeOperation = "source-over";
-
-          ctx.globalAlpha = 0.3;
-          ctx.drawImage(oc, 0, 0);
           ctx.globalAlpha = 1;
+          drawCalibrationOverlay(ctx, result.landmarks, w, h);
         }
       }
 
@@ -799,13 +836,40 @@ export default function PlayPage() {
           }
         }
 
-        // --- Player skeleton ---
-        // Preview-with-camera shows the full skeleton. Real play also shows
-        // it (mirrored, full opacity) so the player can see pose detection
-        // is alive and self-correct in real time.
-        if (result?.landmarks && (isPreview ? !previewNoCameraRef.current : true)) {
+        // --- Player skeleton (preview only) ---
+        // Real play uses the PiP silhouette instead — see GOTCHAS.md.
+        if (isPreview && !previewNoCameraRef.current && result?.landmarks) {
           const mirrored = result.landmarks.map((lm) => ({ ...lm, x: 1 - lm.x }));
           drawStickFigure(ctx, mirrored, 0, 0, w, h);
+        }
+
+        // --- Player silhouette PiP (real play only) ---
+        // Bottom-right Just-Dance-style picture-in-picture so the player can
+        // see themselves and confirm they're in frame without exposing the
+        // raw webcam feed.
+        if (!isPreview && currentMaskBitmap) {
+          const pipH = Math.min(260, h * 0.28);
+          const pipW = pipH * 0.62; // portrait
+          const padding = 24;
+          const pipX = w - pipW - padding;
+          const pipY = h - pipH - padding;
+          // Frame
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(pipX - 2, pipY - 2, pipW + 4, pipH + 4, 16);
+          ctx.fillStyle = "rgba(0,0,0,0.55)";
+          ctx.fill();
+          ctx.strokeStyle = gold ? "rgba(253,224,71,0.8)" : "rgba(255,255,255,0.18)";
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.restore();
+          // Silhouette inside
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(pipX, pipY, pipW, pipH, 14);
+          ctx.clip();
+          drawSilhouette(pipX, pipY, pipW, pipH, gold ? "#fde047" : "#06b6d4", 0.95);
+          ctx.restore();
         }
 
         // --- SCORING (on beats when available, else every 500ms) ---
@@ -1406,24 +1470,31 @@ export default function PlayPage() {
 
       {/* Background capture overlay */}
       {gameState === "bg_capture" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 z-10">
-          <div className="px-10 py-8 bg-black/60 rounded-xl text-center max-w-md">
-            <h2 className="text-3xl font-bold mb-4">Setting Up</h2>
-            <p className="text-white/70 text-lg mb-2">
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center z-10 backdrop-blur-md"
+          style={{
+            backgroundImage:
+              "radial-gradient(at 30% 20%, rgba(6,182,212,0.25), transparent 55%), radial-gradient(at 70% 80%, rgba(168,85,247,0.25), transparent 55%), linear-gradient(to bottom, rgba(0,0,0,0.7), rgba(0,0,0,0.85))",
+          }}
+        >
+          <div className="px-12 py-10 rounded-3xl text-center max-w-md border border-white/15 bg-black/40 backdrop-blur-md shadow-2xl">
+            <h2 className="text-3xl font-extrabold mb-3 bg-gradient-to-r from-cyan-300 to-fuchsia-300 bg-clip-text text-transparent">
+              Setting up
+            </h2>
+            <p className="text-white/85 text-lg mb-2">
               Step out of the camera frame
             </p>
-            <p className="text-white/40 mb-6">
-              We're capturing the background to track you better.
-              Stand aside for a moment.
+            <p className="text-white/50 mb-6 text-sm">
+              We&apos;re learning the background so we can track you cleanly.
             </p>
-            <div className="w-full bg-white/10 rounded-full h-2 mb-2">
+            <div className="w-full bg-white/10 rounded-full h-2 mb-2 overflow-hidden">
               <div
-                className="bg-cyan-500 h-2 rounded-full transition-all duration-200"
+                className="h-2 rounded-full transition-all duration-200 bg-gradient-to-r from-cyan-400 to-fuchsia-400"
                 style={{ width: `${Math.min(100, (bgFrameCount / 90) * 100)}%` }}
               />
             </div>
-            <p className="text-white/30 text-sm">
-              Capturing... {bgFrameCount} frames
+            <p className="text-white/40 text-xs font-mono">
+              {bgFrameCount} / 90 frames
             </p>
           </div>
         </div>
@@ -1433,23 +1504,18 @@ export default function PlayPage() {
 
       {/* Calibration overlay */}
       {gameState === "calibrating" && (
-        <div className="absolute top-0 left-0 right-0 flex flex-col items-center z-10 pointer-events-none">
-          <div className="mt-8 px-8 py-4 bg-black/60 rounded-xl text-center pointer-events-auto">
-            <h2 className="text-2xl font-bold mb-2">Calibration</h2>
-            <p className="text-white/60 mb-1">
-              Stand in front of the camera so your full body is visible
+        <div className="absolute bottom-10 left-0 right-0 flex flex-col items-center z-10 pointer-events-none">
+          <div className="px-6 py-3 rounded-2xl text-center border border-white/15 bg-black/50 backdrop-blur-md shadow-xl">
+            <p className="text-white/80 text-sm mb-1">
+              Stand inside the outline so your whole body fits
             </p>
-            <p className="text-white/40 text-sm mb-4">
-              Make sure the labeled joints are tracking your body correctly
-            </p>
-
             {calibrationReady ? (
-              <p className="text-green-400 font-semibold animate-pulse">
-                Body detected — starting...
+              <p className="text-emerald-300 font-bold text-lg animate-pulse">
+                Got you — starting…
               </p>
             ) : (
-              <p className="text-yellow-400 animate-pulse">
-                Waiting for body detection...
+              <p className="text-white/50 text-sm animate-pulse">
+                Waiting for body detection…
               </p>
             )}
           </div>
@@ -1701,9 +1767,9 @@ export default function PlayPage() {
         </div>
       )}
 
-      {/* Controls during calibration/gameplay */}
+      {/* Minimal floating controls: Exit only during setup; Exit + Pause once playing. */}
       {(gameState === "playing" || gameState === "calibrating" || gameState === "bg_capture") && (
-        <div className="absolute top-4 left-4 flex items-center gap-3 z-10">
+        <div className="absolute top-4 left-4 flex items-center gap-2 z-10">
           <button
             onClick={() => {
               audioRef.current?.pause();
@@ -1712,71 +1778,34 @@ export default function PlayPage() {
               disconnect();
               router.push("/");
             }}
-            className="text-white/30 hover:text-white/60 text-sm"
+            aria-label="Exit"
+            className="w-9 h-9 flex items-center justify-center rounded-full bg-black/40 backdrop-blur-sm text-white/60 hover:text-white hover:bg-black/60 transition-all border border-white/10"
           >
-            &larr; Exit
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
           </button>
           {gameState === "playing" && (
-            <>
-              <button
-                onClick={() => setShowCoachVideo((v) => !v)}
-                className={`px-3 py-1.5 rounded text-xs font-mono transition-colors ${
-                  showCoachVideo
-                    ? "bg-cyan-500/30 text-cyan-300"
-                    : "bg-white/10 text-white/40"
-                }`}
-              >
-                Video {showCoachVideo ? "ON" : "OFF"}
-              </button>
-              <button
-                onClick={() => setShowCoachSkeleton((v) => !v)}
-                className={`px-3 py-1.5 rounded text-xs font-mono transition-colors ${
-                  showCoachSkeleton
-                    ? "bg-purple-500/30 text-purple-300"
-                    : "bg-white/10 text-white/40"
-                }`}
-              >
-                Skeleton {showCoachSkeleton ? "ON" : "OFF"}
-              </button>
-              <button
-                onClick={() => {
-                  const audio = audioRef.current;
-                  const coach = coachVideoRef.current;
-                  if (audio?.paused) {
-                    audio.play();
-                    coach?.play();
-                  } else {
-                    audio?.pause();
-                    coach?.pause();
-                  }
-                }}
-                className="px-3 py-1.5 bg-white/10 rounded text-xs font-mono text-white/40 hover:text-white/60"
-              >
-                Pause/Resume
-              </button>
-              <button
-                onClick={() => {
-                  const audio = audioRef.current;
-                  const coach = coachVideoRef.current;
-                  if (audio) audio.currentTime = Math.max(0, audio.currentTime - 10);
-                  if (coach) coach.currentTime = Math.max(0, coach.currentTime - 10);
-                }}
-                className="px-3 py-1.5 bg-white/10 rounded text-xs font-mono text-white/40 hover:text-white/60"
-              >
-                -10s
-              </button>
-              <button
-                onClick={() => {
-                  const audio = audioRef.current;
-                  const coach = coachVideoRef.current;
-                  if (audio) audio.currentTime += 10;
-                  if (coach) coach.currentTime += 10;
-                }}
-                className="px-3 py-1.5 bg-white/10 rounded text-xs font-mono text-white/40 hover:text-white/60"
-              >
-                +10s
-              </button>
-            </>
+            <button
+              onClick={() => {
+                const audio = audioRef.current;
+                const coach = coachVideoRef.current;
+                if (audio?.paused) {
+                  audio.play();
+                  coach?.play();
+                } else {
+                  audio?.pause();
+                  coach?.pause();
+                }
+              }}
+              aria-label="Pause / Resume"
+              className="w-9 h-9 flex items-center justify-center rounded-full bg-black/40 backdrop-blur-sm text-white/60 hover:text-white hover:bg-black/60 transition-all border border-white/10"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            </button>
           )}
         </div>
       )}
